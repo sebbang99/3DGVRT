@@ -20,7 +20,7 @@
 #define ASSET 0
 #define LOAD_GLTF 0
 
-#define RAY_QUERY 1
+#define RAY_QUERY 2	// 0 : RT, 1 : Compute RQ, 2 : Graphics RQ
 #define TB_SIZE_X 1	// Should be managed with define.glsl
 #define TB_SIZE_Y 2	// Should be managed with define.glsl
 
