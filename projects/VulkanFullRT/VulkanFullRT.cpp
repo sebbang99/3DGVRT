@@ -68,8 +68,10 @@ public:
 		uint32_t numOfDynamicLights = NUM_OF_DYNAMIC_LIGHTS;
 		uint32_t numOfStaticLights = NUM_OF_STATIC_LIGHTS;
 		uint32_t staticLightOffset = STATIC_LIGHT_OFFSET;
+#if RAY_QUERY
 		uint32_t windowSizeX = 1;
 		uint32_t windowSizeY = 1;
+#endif
 	} specializationData;
 
 	// for Particle Rendering pass
@@ -785,11 +787,15 @@ public:
 	void createParticleRenderingPipeline()
 	{
 		// Specialization constants
+		specializationData.windowSizeX = width;
+		specializationData.windowSizeY = height;
 		std::vector<VkSpecializationMapEntry> specializationMapEntries = {
 			vks::initializers::specializationMapEntry(0, 0, sizeof(uint32_t)),
 			vks::initializers::specializationMapEntry(1, sizeof(uint32_t), sizeof(uint32_t)),
 			vks::initializers::specializationMapEntry(2, sizeof(uint32_t) * 2, sizeof(uint32_t)),
 			vks::initializers::specializationMapEntry(3, sizeof(uint32_t) * 3, sizeof(uint32_t)),
+			vks::initializers::specializationMapEntry(4, sizeof(uint32_t) * 4, sizeof(uint32_t)),
+			vks::initializers::specializationMapEntry(5, sizeof(uint32_t) * 5, sizeof(uint32_t)),
 		};
 		VkSpecializationInfo specializationInfo = vks::initializers::specializationInfo(static_cast<uint32_t>(specializationMapEntries.size()), specializationMapEntries.data(), sizeof(SpecializationData), &specializationData);
 
@@ -814,6 +820,7 @@ public:
 		std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages;
 		shaderStages[0] = loadShader(getShadersPath() + DIR_PATH + "particleRendering.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
 		shaderStages[1] = loadShader(getShadersPath() + DIR_PATH + "particleRendering.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+		shaderStages[1].pSpecializationInfo = &specializationInfo;
 
 		VkGraphicsPipelineCreateInfo pipelineCI = vks::initializers::pipelineCreateInfo(pipelineLayout, renderPass);
 		VkPipelineVertexInputStateCreateInfo emptyInputState = vks::initializers::pipelineVertexInputStateCreateInfo();
@@ -921,7 +928,9 @@ public:
 		std::vector<VkDescriptorPoolSize> poolSizes = {
 			// ray tracing pipeline
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 * swapChain.imageCount),
+#if RAY_QUERY != 2
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 * swapChain.imageCount),
+#endif
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 * swapChain.imageCount),
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * swapChain.imageCount),
 		};
@@ -949,8 +958,6 @@ public:
 #elif RAY_QUERY == 2
 			// Binding 0: Top level acceleration structure
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_FRAGMENT_BIT, 0),
-			// Binding 1: Ray tracing result image
-			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT, 1),
 			// Binding 2: Uniform buffer Dynamic
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT, 2),
 			// Binding 3: Uniform buffer Static
@@ -1002,13 +1009,17 @@ public:
 			accelerationStructureWrite.descriptorCount = 1;
 			accelerationStructureWrite.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 
+#if RAY_QUERY != 2
 			VkDescriptorImageInfo storageImageDescriptor = { VK_NULL_HANDLE, swapChain.buffers[frame.imageIndex].view, VK_IMAGE_LAYOUT_GENERAL };
+#endif
 
 			std::vector<VkWriteDescriptorSet> writeDescriptorSets = {
 				// Binding 0: Top level acceleration structure
 				accelerationStructureWrite,
+#if RAY_QUERY != 2
 				// Binding 1: Ray tracing result image
 				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImageDescriptor),
+#endif
 				// Binding 2: Uniform data Dynamic
 				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, &frame.uniformBuffer.descriptor),
 				// Binding 3: Uniform data Static
@@ -1183,12 +1194,14 @@ public:
 		vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(pushConstants), &pushConstants);
 #endif
 
+#if RAY_QUERY != 2
 		vks::tools::setImageLayout(
 			frame.commandBuffer,
 			swapChain.images[frame.imageIndex],
 			VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_GENERAL,
 			subresourceRange);
+#endif
 
 #if RAY_QUERY == 1
 		vkCmdDispatch(frame.commandBuffer, (width + TB_SIZE_X - 1) / TB_SIZE_X, (height + TB_SIZE_Y - 1) / TB_SIZE_Y, 1);
@@ -1207,17 +1220,20 @@ public:
 			1);
 #endif
 
+#if RAY_QUERY != 2
 		vks::tools::setImageLayout(
 			frame.commandBuffer,
 			swapChain.images[frame.imageIndex],
 			VK_IMAGE_LAYOUT_GENERAL,
 			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 			subresourceRange);
-
-		drawUI(frame.commandBuffer, frameBuffers[frame.imageIndex], frame.vertexBuffer, frame.indexBuffer);
+#endif
 
 #if RAY_QUERY == 2
+		VulkanRTBase::drawUI(frame.commandBuffer, frame.vertexBuffer, frame.indexBuffer);
 		vkCmdEndRenderPass(frame.commandBuffer);
+#else 
+		drawUI(frame.commandBuffer, frameBuffers[frame.imageIndex], frame.vertexBuffer, frame.indexBuffer);
 #endif
 
 		vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timeStampQueryPool, 0);
@@ -1276,12 +1292,14 @@ public:
 			vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(pushConstants), &pushConstants);
 #endif
 
+#if RAY_QUERY != 2
 			vks::tools::setImageLayout(
 				frame.commandBuffer,
 				swapChain.images[frame.imageIndex],
 				VK_IMAGE_LAYOUT_UNDEFINED,
 				VK_IMAGE_LAYOUT_GENERAL,
 				subresourceRange);
+#endif
 
 #if RAY_QUERY == 1
 			vkCmdDispatch(frame.commandBuffer, (width + TB_SIZE_X - 1) / TB_SIZE_X, (height + TB_SIZE_Y - 1) / TB_SIZE_Y, 1);
@@ -1300,17 +1318,20 @@ public:
 				1);
 #endif
 
+#if RAY_QUERY != 2
 			vks::tools::setImageLayout(
 				frame.commandBuffer,
 				swapChain.images[frame.imageIndex],
 				VK_IMAGE_LAYOUT_GENERAL,
 				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 				subresourceRange);
-
-			drawUI(frame.commandBuffer, frameBuffers[frame.imageIndex], frame.vertexBuffer, frame.indexBuffer);
+#endif
 
 #if RAY_QUERY == 2
+			VulkanRTBase::drawUI(frame.commandBuffer, frame.vertexBuffer, frame.indexBuffer);
 			vkCmdEndRenderPass(frame.commandBuffer);
+#else 
+			drawUI(frame.commandBuffer, frameBuffers[frame.imageIndex], frame.vertexBuffer, frame.indexBuffer);
 #endif
 
 			vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timeStampQueryPool, 0);
@@ -1396,6 +1417,9 @@ public:
 		enabledFeatures.shaderInt64 = VK_TRUE;	// Buffer device address requires the 64-bit integer feature to be enabled
 #endif
 		enabledFeatures.samplerAnisotropy = VK_TRUE;
+#if RAY_QUERY == 2
+		enabledFeatures.fragmentStoresAndAtomics = VK_TRUE;
+#endif
 	}
 
 	virtual void getEnabledExtensions()
@@ -1534,9 +1558,11 @@ public:
 		FrameObject currentFrame = frameObjects[getCurrentFrameIndex()];
 		VulkanRTBase::prepareFrame(currentFrame);
 
+#if RAY_QUERY != 2
 		VkDescriptorImageInfo storageImageDescriptor{ VK_NULL_HANDLE, swapChain.buffers[currentFrame.imageIndex].view, VK_IMAGE_LAYOUT_GENERAL };
 		VkWriteDescriptorSet resultImageWrite = vks::initializers::writeDescriptorSet(currentFrame.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImageDescriptor);
 		vkUpdateDescriptorSets(device, 1, &resultImageWrite, 0, VK_NULL_HANDLE);
+#endif
 
 		buildCommandBuffer(currentFrame);
 		VulkanRTBase::submitFrame(currentFrame);
@@ -1550,7 +1576,7 @@ public:
 		//vks::utils::updateLightDynamicInfo(uniformData, scene, timer);
 		updateUniformBuffer();
 
-		draw();
+ 		draw();
 	}
 };
 

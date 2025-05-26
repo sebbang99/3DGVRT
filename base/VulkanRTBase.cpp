@@ -299,7 +299,11 @@ void VulkanRTBase::prepare()
 	setupSwapChain();
 	createSynchronizationPrimitives();
 	setupDepthStencil();
+#if RAY_QUERY == 2
+	VulkanRTBase::setupRenderPass();
+#else
 	setupRenderPass();
+#endif
 	createPipelineCache();
 	setupFrameBuffer();
 	settings.overlay = settings.overlay && (!benchmark.active);
