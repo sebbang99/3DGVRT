@@ -93,6 +93,14 @@ public:
 		VkCommandBuffer commandBuffer{ VK_NULL_HANDLE };
 	} gaussianEnclosing;
 
+	struct PostCompute {
+		VkPipeline pipeline{ VK_NULL_HANDLE };
+		VkPipelineLayout pipelineLayout{ VK_NULL_HANDLE };
+
+		VkDescriptorSet descriptorSet{ VK_NULL_HANDLE };
+		VkDescriptorSetLayout descriptorSetLayout{ VK_NULL_HANDLE };
+	} postCompute;
+
 	vk3DGRT::Model gModel;
 
 	struct FrameObject : public BaseFrameObject {
@@ -756,6 +764,17 @@ public:
 	}
 
 #if RAY_QUERY
+	void createPostComputePipeline()
+	{
+		VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = vks::initializers::pipelineLayoutCreateInfo(&postCompute.descriptorSetLayout, 1);
+		VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr, &postCompute.pipelineLayout));
+
+		VkComputePipelineCreateInfo computePipelineCreateInfo = vks::initializers::computePipelineCreateInfo(postCompute.pipelineLayout, 0);
+		computePipelineCreateInfo.stage = loadShader(getShadersPath() + DIR_PATH + "postCompute.comp.spv", VK_SHADER_STAGE_COMPUTE_BIT);
+
+		VK_CHECK_RESULT(vkCreateComputePipelines(device, pipelineCache, 1, &computePipelineCreateInfo, nullptr, &postCompute.pipeline));
+	}
+
 	void createParticleRenderingPipeline()
 	{
 		// Specialization constants
@@ -1064,6 +1083,38 @@ public:
 		// for gaussianEnclosing pipeline end
 	}
 
+#if RAY_QUERY
+	void createPostComputeDescriptorSets()
+	{
+		std::vector<VkDescriptorPoolSize> poolSizes = {
+			// Indirect Buffer
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1)
+		};
+		VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 1); // postCompute pipeline
+
+		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, nullptr, &descriptorPool));	// descriptor pool
+
+		std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings = {
+			// Binding 0: Indirect Buffer
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 0),
+		};
+
+		VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCI = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
+		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCI, nullptr, &postCompute.descriptorSetLayout));
+
+		VkDescriptorSet& descriptorSet = postCompute.descriptorSet;
+		VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &postCompute.descriptorSetLayout, 1);
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, &descriptorSet));
+
+		std::vector<VkWriteDescriptorSet> computeWriteDescriptorSets = {
+			// Binding 0: Indirect Buffer
+			vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, &indirectBuffer.descriptor)
+		};
+
+		vkUpdateDescriptorSets(device, static_cast<uint32_t>(computeWriteDescriptorSets.size()), computeWriteDescriptorSets.data(), 0, nullptr);
+	}
+#endif
+
 	/*
 		If the window has been resized, we need to recreate the storage image and it's descriptor
 	*/
@@ -1121,17 +1172,46 @@ public:
 			VK_IMAGE_LAYOUT_GENERAL,
 			subresourceRange);
 
-		vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-		vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &frame.descriptorSet, 0, 0);
-		vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
-
 		vkCmdFillBuffer(frame.commandBuffer, indicesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
 		vkCmdFillBuffer(frame.commandBuffer, transmittancesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
 		vkCmdFillBuffer(frame.commandBuffer, distancesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
-		vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 0, VK_WHOLE_SIZE, 1);
+		vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 4, VK_WHOLE_SIZE, 1);
 		vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 0, sizeof(int), 0);
-		vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 0, VK_WHOLE_SIZE, 0);
+		vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 4, VK_WHOLE_SIZE, 0);
 		vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 0, sizeof(int), width * height);
+
+
+		std::vector<VkBuffer> buffers = {
+			indicesBuffer.buffer,
+			transmittancesBuffer.buffer,
+			distancesBuffer.buffer,
+			indirectBuffer.buffer,
+			totalCounts.buffer
+		};
+
+		std::vector<VkBufferMemoryBarrier> transferToComputeBarriers = {};
+		for (const auto& buffer : buffers) {
+			VkBufferMemoryBarrier barrier{};
+			barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.buffer = buffer;
+			barrier.offset = 0;
+			barrier.size = VK_WHOLE_SIZE;
+			transferToComputeBarriers.push_back(barrier);
+		}
+
+		vkCmdPipelineBarrier(
+			frame.commandBuffer,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0,
+			0, nullptr,
+			transferToComputeBarriers.size(), transferToComputeBarriers.data(),
+			0, nullptr
+		);
 
 		VkClearColorValue clearColor = { {0.0f, 0.0f, 0.0f, 1.0f} };
 
@@ -1146,6 +1226,10 @@ public:
 
 		for (pushConstants.iterations = 0; pushConstants.iterations < MAX_ITERATION; pushConstants.iterations++)
 		{ 
+			vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+			vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &frame.descriptorSet, 0, 0);
+			vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
+
 			vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
 
 			if (pushConstants.iterations == 0)
@@ -1155,7 +1239,33 @@ public:
 
 			if (pushConstants.iterations < MAX_ITERATION - 1)
 			{
+				vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, postCompute.pipeline);
+				vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, postCompute.pipelineLayout, 0, 1, &postCompute.descriptorSet, 0, 0);
+
 				VkBufferMemoryBarrier barrier = vks::initializers::bufferMemoryBarrier();
+				barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				barrier.buffer = indirectBuffer.buffer;
+				barrier.offset = 0;
+				barrier.size = VK_WHOLE_SIZE;
+
+				vkCmdPipelineBarrier(
+					frame.commandBuffer,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					VK_FLAGS_NONE,
+					0, nullptr,
+					1, &barrier,
+					0, nullptr
+				);
+
+				vkCmdDispatch(frame.commandBuffer, 1, 1, 1);
+
+				vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+				vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &frame.descriptorSet, 0, 0);
+				vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
+
+				barrier = vks::initializers::bufferMemoryBarrier();
 				barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 				barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
 				barrier.buffer = indirectBuffer.buffer;
@@ -1173,6 +1283,23 @@ public:
 				);
 			}
 		}
+
+		VkImageMemoryBarrier imageMemoryBarrier = vks::initializers::imageMemoryBarrier();
+		imageMemoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		imageMemoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		imageMemoryBarrier.image = swapChain.images[frame.imageIndex];
+		imageMemoryBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		vkCmdPipelineBarrier(
+			frame.commandBuffer,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_FLAGS_NONE,
+			0, nullptr,
+			0, nullptr,
+			1, &imageMemoryBarrier);
 
 		vks::tools::setImageLayout(
 			frame.commandBuffer,
@@ -1213,17 +1340,46 @@ public:
 				VK_IMAGE_LAYOUT_GENERAL,
 				subresourceRange);
 
-			vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-			vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &frame.descriptorSet, 0, 0);
-			vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
-
 			vkCmdFillBuffer(frame.commandBuffer, indicesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
 			vkCmdFillBuffer(frame.commandBuffer, transmittancesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
 			vkCmdFillBuffer(frame.commandBuffer, distancesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
-			vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 0, VK_WHOLE_SIZE, 1);
+			vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 4, VK_WHOLE_SIZE, 1);
 			vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 0, sizeof(int), 0);
-			vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 0, VK_WHOLE_SIZE, 0);
+			vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 4, VK_WHOLE_SIZE, 0);
 			vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 0, sizeof(int), width * height);
+
+
+			std::vector<VkBuffer> buffers = {
+				indicesBuffer.buffer,
+				transmittancesBuffer.buffer,
+				distancesBuffer.buffer,
+				indirectBuffer.buffer,
+				totalCounts.buffer
+			};
+
+			std::vector<VkBufferMemoryBarrier> transferToComputeBarriers = {};
+			for (const auto& buffer : buffers) {
+				VkBufferMemoryBarrier barrier{};
+				barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+				barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.buffer = buffer;
+				barrier.offset = 0;
+				barrier.size = VK_WHOLE_SIZE;
+				transferToComputeBarriers.push_back(barrier);
+			}
+
+			vkCmdPipelineBarrier(
+				frame.commandBuffer,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				0,
+				0, nullptr,
+				transferToComputeBarriers.size(), transferToComputeBarriers.data(),
+				0, nullptr
+			);
 
 			VkClearColorValue clearColor = { {0.0f, 0.0f, 0.0f, 1.0f} };
 
@@ -1238,6 +1394,10 @@ public:
 
 			for (pushConstants.iterations = 0; pushConstants.iterations < MAX_ITERATION; pushConstants.iterations++)
 			{
+				vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+				vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &frame.descriptorSet, 0, 0);
+				vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
+
 				vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
 
 				if (pushConstants.iterations == 0)
@@ -1247,7 +1407,33 @@ public:
 
 				if (pushConstants.iterations < MAX_ITERATION - 1)
 				{
+					vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, postCompute.pipeline);
+					vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, postCompute.pipelineLayout, 0, 1, &postCompute.descriptorSet, 0, 0);
+
 					VkBufferMemoryBarrier barrier = vks::initializers::bufferMemoryBarrier();
+					barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+					barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+					barrier.buffer = indirectBuffer.buffer;
+					barrier.offset = 0;
+					barrier.size = VK_WHOLE_SIZE;
+
+					vkCmdPipelineBarrier(
+						frame.commandBuffer,
+						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_FLAGS_NONE,
+						0, nullptr,
+						1, &barrier,
+						0, nullptr
+					);
+
+					vkCmdDispatch(frame.commandBuffer, 1, 1, 1);
+
+					vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+					vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &frame.descriptorSet, 0, 0);
+					vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
+
+					barrier = vks::initializers::bufferMemoryBarrier();
 					barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 					barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
 					barrier.buffer = indirectBuffer.buffer;
@@ -1265,6 +1451,23 @@ public:
 					);
 				}
 			}
+
+			VkImageMemoryBarrier imageMemoryBarrier = vks::initializers::imageMemoryBarrier();
+			imageMemoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			imageMemoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			imageMemoryBarrier.image = swapChain.images[frame.imageIndex];
+			imageMemoryBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+			vkCmdPipelineBarrier(
+				frame.commandBuffer,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				VK_FLAGS_NONE,
+				0, nullptr,
+				0, nullptr,
+				1, &imageMemoryBarrier);
 
 			vks::tools::setImageLayout(
 				frame.commandBuffer,
@@ -1627,6 +1830,9 @@ public:
 		createParticleRenderingPipeline();
 #if !RAY_QUERY
 		createShaderBindingTables();
+#else
+		createPostComputeDescriptorSets();
+		createPostComputePipeline();
 #endif
 
 		prepared = true;
@@ -1650,7 +1856,6 @@ public:
 			return;
 
 		//vks::utils::updateLightDynamicInfo(uniformData, scene, timer);
-
 		draw();
 	}
 };

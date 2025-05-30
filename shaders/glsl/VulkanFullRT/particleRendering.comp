@@ -140,7 +140,7 @@ void trace(rayQueryEXT rayQuery, vec3 rayOri, vec3 rayDir, const float tmin, con
 void main()
 {
 	uint globalIdx = gl_GlobalInvocationID.x;
-	if (globalIdx > totalCounts.t[pushConstants.iterations])
+	if (globalIdx >= totalCounts.t[pushConstants.iterations])
 		return;
 
 	uint imageIdx;
@@ -151,7 +151,7 @@ void main()
 		imageIdx = indices.i[globalIdx];
 		if (globalIdx == 0)
 		{
-			int decrease = -(int(totalCounts.t[pushConstants.iterations] + TB_SIZE_X - 1)) / TB_SIZE_X;
+			int decrease = -(int(totalCounts.t[pushConstants.iterations] + TB_SIZE_X - 1) / TB_SIZE_X);
 			atomicAdd(indirectBuffer.x, decrease);
 		}
 	}
