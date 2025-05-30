@@ -18,7 +18,8 @@
 #include "../base/utils.glsl"
 #include "../base/define.glsl"
 
-layout(local_size_x = TB_SIZE_X, local_size_y = TB_SIZE_Y) in;
+//layout(local_size_x = TB_SIZE_X, local_size_y = TB_SIZE_Y) in;
+layout(local_size_x = TB_SIZE_X) in;
 
 // Initialized with default value. Appropriate value will be transfered from application.
 layout(constant_id = 0) const uint numOfLights = 1;	
@@ -55,27 +56,46 @@ layout(std430, binding = 5, set = 0) buffer ParticleSphCoefficients {
 layout(std430, binding = 6, set = 0) buffer ParticleVisibility {
 	float v[];
 } particleVisibilities;
+layout(std430, binding = 7, set = 0) buffer Indices {
+	uint i[];
+} indices;
+layout(std430, binding = 8, set = 0) buffer Transmittances {
+	float t[];
+} transmittances;
+layout(std430, binding = 9, set = 0) buffer Distances {
+	float d[];
+} distances;
+layout(std430, binding = 10, set = 0) buffer IndirectBuffer {
+	int x;
+	int y;
+	int z;
+} indirectBuffer;
+layout(std430, binding = 11, set = 0) buffer TotalCounts {
+	uint t[];
+} totalCounts;
 #endif
 
 #include "../base/gaussianfunctions.glsl"
 
 // Global variable
-RayPayload rayPayload;
+//shared RayPayload rayPayload[TB_SIZE_X * TB_SIZE_Y];
+shared RayPayload rayPayload[TB_SIZE_X];
+uint threadIdx;
 
 /*** 3dgrt style ***/
 void initializeRayPayload(){
 	for(int i = 0; i < MAX_HIT_PER_TRACE; i++){
-		rayPayload.hits[i].particleId = INVALID_PARTICLE_ID;
-		rayPayload.hits[i].dist = INFINITE_DISTANCE;
+		rayPayload[threadIdx].hits[i].particleId = INVALID_PARTICLE_ID;
+		rayPayload[threadIdx].hits[i].dist = INFINITE_DISTANCE;
 	}
 }
 
 void compareAndSwapHitPayloadValue(inout RayHit hit, int idx) {
-    const float dist = rayPayload.hits[idx].dist;
+    const float dist = rayPayload[threadIdx].hits[idx].dist;
     if (hit.dist < dist) {
-        rayPayload.hits[idx].dist = hit.dist;
-        const uint id = rayPayload.hits[idx].particleId;
-        rayPayload.hits[idx].particleId = hit.particleId;
+        rayPayload[threadIdx].hits[idx].dist = hit.dist;
+        const uint id = rayPayload[threadIdx].hits[idx].particleId;
+        rayPayload[threadIdx].hits[idx].particleId = hit.particleId;
         hit.dist = dist;
         hit.particleId = id;
     }
@@ -91,7 +111,7 @@ void trace(rayQueryEXT rayQuery, vec3 rayOri, vec3 rayDir, const float tmin, con
 			float hitT = rayQueryGetIntersectionTEXT(rayQuery, false);
 			RayHit hit = RayHit(primitiveId / 20, hitT);
 
-			if(hit.dist < rayPayload.hits[MAX_HIT_PER_TRACE - 1].dist) {
+			if(hit.dist < rayPayload[threadIdx].hits[MAX_HIT_PER_TRACE - 1].dist) {
 				compareAndSwapHitPayloadValue(hit, 0);
 				compareAndSwapHitPayloadValue(hit, 1);
 				compareAndSwapHitPayloadValue(hit, 2);
@@ -109,7 +129,7 @@ void trace(rayQueryEXT rayQuery, vec3 rayOri, vec3 rayDir, const float tmin, con
 				compareAndSwapHitPayloadValue(hit, 14);
 				compareAndSwapHitPayloadValue(hit, 15);
 
-				if(rayPayload.hits[MAX_HIT_PER_TRACE - 1].dist <= hitT) {
+				if(rayPayload[threadIdx].hits[MAX_HIT_PER_TRACE - 1].dist <= hitT) {
 					rayQueryConfirmIntersectionEXT(rayQuery);
 				}
 			}
@@ -119,9 +139,27 @@ void trace(rayQueryEXT rayQuery, vec3 rayOri, vec3 rayDir, const float tmin, con
 
 void main()
 {
-	uvec2 gridId = gl_GlobalInvocationID.xy;
-	if (gridId.x >= windowSizeX || gridId.y >= windowSizeY)
+	uint globalIdx = gl_GlobalInvocationID.x;
+	if (globalIdx > totalCounts.t[pushConstants.iterations])
 		return;
+
+	uint imageIdx;
+	if (pushConstants.iterations == 0)
+		imageIdx = globalIdx;
+	else
+	{
+		imageIdx = indices.i[globalIdx];
+		if (globalIdx == 0)
+		{
+			int decrease = -(int(totalCounts.t[pushConstants.iterations] + TB_SIZE_X - 1)) / TB_SIZE_X;
+			atomicAdd(indirectBuffer.x, decrease);
+		}
+	}
+
+	uvec2 gridId = uvec2(imageIdx.x % windowSizeX, imageIdx.x / windowSizeX);
+
+	uint localId = gl_LocalInvocationID.x;
+	threadIdx = localId;
 
 	// set ray origin, direction
 	const vec2 inUV = gridId / vec2(windowSizeX, windowSizeY);
@@ -131,65 +169,76 @@ void main()
 	vec4 target = uboDynamic.projInverse * vec4(d.x, d.y, 1.0f, 1.0f) ;	// (pixel position in EC) / Wc
 	vec4 rayDirection = normalize(uboDynamic.viewInverse * vec4(target.xyz, 0.0f));
 
-	/*** 3dgrt style ***/
+//	/*** 3dgrt style ***/
 	vec3 rayRadiance = vec3(0.0f);
-	float rayTransmittance = 1.0f;
 	float rayHitDistance = 0.0f;
+	vec2 minMaxT = intersectAABB(uboStatic.aabb, rayOrigin.xyz, rayDirection.xyz);
+	const float epsT = EPS_T;
+
+	float rayTransmittance;
+	float rayLastHitDistance;
+	if (pushConstants.iterations != 0)
+	{
+		rayTransmittance = transmittances.t[globalIdx];
+		rayLastHitDistance = distances.d[globalIdx];
+	}
+	else
+	{
+	    rayTransmittance = 1.0f;
+		rayLastHitDistance = max(0.0f, minMaxT.x - epsT);
+	}
 
 #ifdef ENABLE_NORMALS
 	vec3 rayNormal = vec3(0.0f);
 #endif
-#ifdef ENABLE_HIT_COUNTS
-	uint rayHitsCount = 0;
-#endif
 
-	vec2 minMaxT = intersectAABB(uboStatic.aabb, rayOrigin.xyz, rayDirection.xyz);
-	const float epsT = EPS_T;
+//	// Gather k hits
+	rayQueryEXT rayQuery;
+	trace(rayQuery, rayOrigin.xyz, rayDirection.xyz, rayLastHitDistance + epsT, minMaxT.y + epsT);
+	if(rayPayload[threadIdx].hits[0].particleId == INVALID_PARTICLE_ID){
+		return;
+	}
 
-	float rayLastHitDistance = max(0.0f, minMaxT.x - epsT);
+	// Process k hits
+    for(int i = 0; i < MAX_HIT_PER_TRACE; i++){
+		const RayHit rayHit = rayPayload[threadIdx].hits[nonuniformEXT(i)];
 
-	while((rayLastHitDistance <= minMaxT.y) && (rayTransmittance > uboStatic.minTransmittance)){
-		// Gather k hits
-		rayQueryEXT rayQuery;
-		trace(rayQuery, rayOrigin.xyz, rayDirection.xyz, rayLastHitDistance + epsT, minMaxT.y + epsT);
-
-		if(rayPayload.hits[0].particleId == INVALID_PARTICLE_ID){
-			break;
-		}
-
-		// Process k hits
-        for(int i = 0; i < MAX_HIT_PER_TRACE; i++){
-			const RayHit rayHit = rayPayload.hits[nonuniformEXT(i)];
-
-			if((rayHit.particleId != INVALID_PARTICLE_ID) && (rayTransmittance > uboStatic.minTransmittance)){
-				const bool acceptedHit = processHit(
-					rayOrigin.xyz,
-					rayDirection.xyz,
-					rayHit.particleId,
+		if((rayHit.particleId != INVALID_PARTICLE_ID) && (rayTransmittance > uboStatic.minTransmittance)){
+			const bool acceptedHit = processHit(
+				rayOrigin.xyz,
+				rayDirection.xyz,
+				rayHit.particleId,
 #if BUFFER_REFERENCE
-					uboStatic.densityBufferDeviceAddress,
-					uboStatic.sphCoefficientBufferDeviceAddress,
-					uboStatic.visibilityBufferDeviceAddress,
+				uboStatic.densityBufferDeviceAddress,
+				uboStatic.sphCoefficientBufferDeviceAddress,
+				uboStatic.visibilityBufferDeviceAddress,
 #endif
-					uboStatic.hitMinGaussianResponse,
-					ALPHA_MIN_THRESHOLD,
-					uboStatic.sphEvalDegree,
-					rayTransmittance,
-					rayRadiance,
-					rayHitDistance
+				uboStatic.hitMinGaussianResponse,
+				ALPHA_MIN_THRESHOLD,
+				uboStatic.sphEvalDegree,
+				rayTransmittance,
+				rayRadiance,
+				rayHitDistance
 #if ENABLE_NORMALS
-					,rayNormal
+				,rayNormal
 #endif
-				);
+			);
 
-				rayLastHitDistance = max(rayLastHitDistance, rayHit.dist);
-
-#ifdef ENABLE_HIT_COUNTS
-				rayHitsCount += acceptedHit ? 1 : 0;
-#endif
-			}
+			rayLastHitDistance = max(rayLastHitDistance, rayHit.dist);
 		}
 	}
 
-    imageStore(image, ivec2(gridId), vec4(rayRadiance, 1.0f));
+	vec3 color = imageLoad(image, ivec2(gridId)).xyz + rayRadiance.xyz;
+    imageStore(image, ivec2(gridId), vec4(color, 1.0f));
+
+	if (!((rayLastHitDistance <= minMaxT.y) && (rayTransmittance > uboStatic.minTransmittance)))
+		return;
+
+	atomicAdd(indirectBuffer.x, 1);
+	uint idx = atomicAdd(totalCounts.t[pushConstants.iterations + 1], 1);
+	
+	indices.i[idx] = imageIdx;
+	transmittances.t[idx] = rayTransmittance;
+	distances.d[idx] = rayLastHitDistance;
+
 }

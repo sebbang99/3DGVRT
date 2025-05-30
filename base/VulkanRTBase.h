@@ -235,6 +235,7 @@ public:
 	struct PushConstants {
 		alignas(4) vks::UIOverlay::RayOption rayOption;
 		alignas(4) LightAttVar lightAttVar;
+		alignas(4) int iterations;
 	} pushConstants;
 
 	vks::Benchmark benchmark;
@@ -328,6 +329,8 @@ public:
 
 	PFN_vkGetFenceStatus vkGetFenceStatus;
 	PFN_vkCmdWriteTimestamp vkCmdWriteTimestamp;
+	PFN_vkCmdDispatchIndirect vkCmdDispatchIndirect;
+
 #elif defined(VK_USE_PLATFORM_DIRECTFB_EXT)
 	bool quit = false;
 	IDirectFB* dfb = nullptr;

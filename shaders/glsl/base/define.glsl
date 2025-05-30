@@ -7,15 +7,15 @@
  *
  */
 
-#define TB_SIZE_X 1	// Should be managed with define.glsl
-#define TB_SIZE_Y 2	// Should be managed with define.glsl
+#define TB_SIZE_X 2	// Should be managed with define.glsl
+#define TB_SIZE_Y 1	// Should be managed with define.glsl
 
 #define RAY_TMIN 0.1f
 #define SHADOW_RAY_ORIGIN_MOVEMENT_EPSILON 0.1f	
 
 #define ANY_HIT 0	// This macro should be managed with Define.h
 
-#define ITERATIONS 5
+#define ITERATIONS 6
 
 struct RayOption {
 	bool shadowRay;
@@ -32,4 +32,5 @@ struct LightAttVar {
 layout(push_constant, std430) uniform PushConstants {
 	RayOption rayOption;
 	LightAttVar lightAtt;
+	int iterations;
 } pushConstants;

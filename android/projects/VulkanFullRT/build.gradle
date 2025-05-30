@@ -86,9 +86,15 @@ task copyTask {
     }
 
     // ply models
+//    copy {
+//        from rootProject.ext.assetPath + '3DGRTModels/lego'
+//        into 'assets/3DGRTModels/lego'
+//        include 'export_last.ply'
+//    }
+
     copy {
-        from rootProject.ext.assetPath + '3DGRTModels/lego'
-        into 'assets/3DGRTModels/lego'
+        from rootProject.ext.assetPath + '3DGRTModels/hotdog'
+        into 'assets/3DGRTModels/hotdog'
         include 'export_last.ply'
     }
 

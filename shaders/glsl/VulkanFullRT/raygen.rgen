@@ -132,8 +132,8 @@ void main()
 	const float epsT = EPS_T;
 
 	float rayLastHitDistance = max(0.0f, minMaxT.x - epsT);
-
-	while((rayLastHitDistance <= minMaxT.y) && (rayTransmittance > uboStatic.minTransmittance))
+	int i = 0;
+	while(i < 6 &&(rayLastHitDistance <= minMaxT.y) && (rayTransmittance > uboStatic.minTransmittance))
 	{
 		// Gather k hits
 		trace(rayOrigin.xyz, rayDirection.xyz, rayLastHitDistance + epsT, minMaxT.y + epsT);
@@ -173,6 +173,7 @@ void main()
 #endif
 			}
 		}
+		i++;
 	}
 
     imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(rayRadiance, 1.0f));

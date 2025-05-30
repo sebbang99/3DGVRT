@@ -49,6 +49,11 @@ public:
 	AccelerationStructure topLevelAS3DGRT{};
 
 	vks::Buffer transformBuffer3DGRT;
+	vks::Buffer indicesBuffer;
+	vks::Buffer transmittancesBuffer;
+	vks::Buffer distancesBuffer;
+	vks::Buffer indirectBuffer;
+	vks::Buffer totalCounts;
 
 #if !RAY_QUERY
 	std::vector<VkRayTracingShaderGroupCreateInfoKHR> shaderGroups{};
@@ -874,7 +879,12 @@ public:
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 * swapChain.imageCount),
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 * swapChain.imageCount),
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 * swapChain.imageCount),
+			// ParticleDensities, ParticleSphCoefficients, ParticleVisibility
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * swapChain.imageCount),
+#if RAY_QUERY
+			// Indices, Transmittances, Distances, Indirect, TotalCounts
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 * swapChain.imageCount)
+#endif
 		};
 		VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, swapChain.imageCount); // gaussianEnclosing pipeline + ray tracing pipeline
 
@@ -897,6 +907,16 @@ public:
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 5),
 			// Binding 6: Storage buffer - Particle Visibility
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 6),
+			// Binding 7: Storage buffer - Indices
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 7),
+			// Binding 8: Storage buffer - Transmittances
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 8),
+			// Binding 9: Storage buffer - Distances
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 9),
+			// Binding 10: Storage buffer - IndirectBuffer
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 10),
+			// Binding 11: Storage buffer - TotalCounts
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 11)
 #else
 			// Binding 0: Top level acceleration structure
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0),
@@ -947,11 +967,18 @@ public:
 				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImageDescriptor),
 				// Binding 2: Uniform data Dynamic
 				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, &frame.uniformBuffer.descriptor),
-				// Binding 3: Uniform data Static
+				// Binding 3: Uniform & Storage data Static
 				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3, &frame.uniformBufferStatic.descriptor),
 				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, &particleDensities.descriptor),
 				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5, &particleSphCoefficients.descriptor),
 				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6, &particleVisibility.descriptor),
+#if RAY_QUERY
+				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7, &indicesBuffer.descriptor),
+				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8, &transmittancesBuffer.descriptor),
+				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9, &distancesBuffer.descriptor),
+				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10, &indirectBuffer.descriptor),
+				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11, &totalCounts.descriptor),
+#endif
 			};
 
 			vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, VK_NULL_HANDLE);
@@ -1067,9 +1094,193 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(gaussianEnclosing.commandBuffer));
 	}
 
+
 	/*
 		Command buffer record
 	*/
+#if RAY_QUERY
+	void buildCommandBuffer(FrameObject& frame)
+	{
+		if (resized)
+		{
+			handleResize();
+		}
+		vkResetCommandBuffer(frame.commandBuffer, 0);
+		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
+
+		VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		VK_CHECK_RESULT(vkBeginCommandBuffer(frame.commandBuffer, &cmdBufInfo));
+
+		vkCmdResetQueryPool(frame.commandBuffer, frame.timeStampQueryPool, 0, static_cast<uint32_t>(frame.timeStamps.size()));
+
+		vks::tools::setImageLayout(
+			frame.commandBuffer,
+			swapChain.images[frame.imageIndex],
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_GENERAL,
+			subresourceRange);
+
+		vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+		vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &frame.descriptorSet, 0, 0);
+		vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
+
+		vkCmdFillBuffer(frame.commandBuffer, indicesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
+		vkCmdFillBuffer(frame.commandBuffer, transmittancesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
+		vkCmdFillBuffer(frame.commandBuffer, distancesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
+		vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 0, VK_WHOLE_SIZE, 1);
+		vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 0, sizeof(int), 0);
+		vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 0, VK_WHOLE_SIZE, 0);
+		vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 0, sizeof(int), width * height);
+
+		VkClearColorValue clearColor = { {0.0f, 0.0f, 0.0f, 1.0f} };
+
+		VkImageSubresourceRange range = {};
+		range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		range.baseMipLevel = 0;
+		range.levelCount = 1;
+		range.baseArrayLayer = 0;
+		range.layerCount = 1;
+
+		vkCmdClearColorImage(frame.commandBuffer, swapChain.images[frame.imageIndex], VK_IMAGE_LAYOUT_GENERAL, &clearColor, 1,&range);
+
+		for (pushConstants.iterations = 0; pushConstants.iterations < MAX_ITERATION; pushConstants.iterations++)
+		{ 
+			vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
+
+			if (pushConstants.iterations == 0)
+				vkCmdDispatch(frame.commandBuffer, (width * height + TB_SIZE_X - 1) / TB_SIZE_X, 1, 1);
+			else
+				vkCmdDispatchIndirect(frame.commandBuffer, indirectBuffer.buffer, 0);
+
+			if (pushConstants.iterations < MAX_ITERATION - 1)
+			{
+				VkBufferMemoryBarrier barrier = vks::initializers::bufferMemoryBarrier();
+				barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+				barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+				barrier.buffer = indirectBuffer.buffer;
+				barrier.offset = 0;
+				barrier.size = VK_WHOLE_SIZE;
+
+				vkCmdPipelineBarrier(
+					frame.commandBuffer,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+					VK_FLAGS_NONE,
+					0, nullptr,
+					1, &barrier,
+					0, nullptr
+				);
+			}
+		}
+
+		vks::tools::setImageLayout(
+			frame.commandBuffer,
+			swapChain.images[frame.imageIndex],
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+			subresourceRange);
+
+		drawUI(frame.commandBuffer, frameBuffers[frame.imageIndex], frame.vertexBuffer, frame.indexBuffer);
+
+		vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timeStampQueryPool, 0);
+
+		VK_CHECK_RESULT(vkEndCommandBuffer(frame.commandBuffer));
+	}
+
+	virtual void buildCommandBuffers()
+	{
+		if (resized)
+		{
+			handleResize();
+		}
+
+		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
+
+		VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		for (auto& frame : frameObjects)
+		{
+			vkResetCommandBuffer(frame.commandBuffer, 0);
+			VK_CHECK_RESULT(vkBeginCommandBuffer(frame.commandBuffer, &cmdBufInfo));
+
+			vkCmdResetQueryPool(frame.commandBuffer, frame.timeStampQueryPool, 0, static_cast<uint32_t>(frame.timeStamps.size()));
+
+			vks::tools::setImageLayout(
+				frame.commandBuffer,
+				swapChain.images[frame.imageIndex],
+				VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_IMAGE_LAYOUT_GENERAL,
+				subresourceRange);
+
+			vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+			vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &frame.descriptorSet, 0, 0);
+			vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
+
+			vkCmdFillBuffer(frame.commandBuffer, indicesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
+			vkCmdFillBuffer(frame.commandBuffer, transmittancesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
+			vkCmdFillBuffer(frame.commandBuffer, distancesBuffer.buffer, 0, VK_WHOLE_SIZE, 0);
+			vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 0, VK_WHOLE_SIZE, 1);
+			vkCmdFillBuffer(frame.commandBuffer, indirectBuffer.buffer, 0, sizeof(int), 0);
+			vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 0, VK_WHOLE_SIZE, 0);
+			vkCmdFillBuffer(frame.commandBuffer, totalCounts.buffer, 0, sizeof(int), width * height);
+
+			VkClearColorValue clearColor = { {0.0f, 0.0f, 0.0f, 1.0f} };
+
+			VkImageSubresourceRange range = {};
+			range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			range.baseMipLevel = 0;
+			range.levelCount = 1;
+			range.baseArrayLayer = 0;
+			range.layerCount = 1;
+
+			vkCmdClearColorImage(frame.commandBuffer, swapChain.images[frame.imageIndex], VK_IMAGE_LAYOUT_GENERAL, &clearColor, 1, &range);
+
+			for (pushConstants.iterations = 0; pushConstants.iterations < MAX_ITERATION; pushConstants.iterations++)
+			{
+				vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), &pushConstants);
+
+				if (pushConstants.iterations == 0)
+					vkCmdDispatch(frame.commandBuffer, (width * height + TB_SIZE_X - 1) / TB_SIZE_X, 1, 1);
+				else
+					vkCmdDispatchIndirect(frame.commandBuffer, indirectBuffer.buffer, 0);
+
+				if (pushConstants.iterations < MAX_ITERATION - 1)
+				{
+					VkBufferMemoryBarrier barrier = vks::initializers::bufferMemoryBarrier();
+					barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+					barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+					barrier.buffer = indirectBuffer.buffer;
+					barrier.offset = 0;
+					barrier.size = VK_WHOLE_SIZE;
+
+					vkCmdPipelineBarrier(
+						frame.commandBuffer,
+						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+						VK_FLAGS_NONE,
+						0, nullptr,
+						1, &barrier,
+						0, nullptr
+					);
+				}
+			}
+
+			vks::tools::setImageLayout(
+				frame.commandBuffer,
+				swapChain.images[frame.imageIndex],
+				VK_IMAGE_LAYOUT_GENERAL,
+				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+				subresourceRange);
+
+			drawUI(frame.commandBuffer, frameBuffers[frame.imageIndex], frame.vertexBuffer, frame.indexBuffer);
+
+			vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timeStampQueryPool, 0);
+
+			VK_CHECK_RESULT(vkEndCommandBuffer(frame.commandBuffer));
+		}
+	}
+#else
 	void buildCommandBuffer(FrameObject& frame)
 	{
 		if (resized)
@@ -1103,7 +1314,8 @@ public:
 			subresourceRange);
 
 #if RAY_QUERY
-		vkCmdDispatch(frame.commandBuffer, (width + TB_SIZE_X - 1) / TB_SIZE_X, (height + TB_SIZE_Y - 1) / TB_SIZE_Y, 1);
+		vkCmdDispatch(frame.commandBuffer, (width * height + TB_SIZE_X - 1) / TB_SIZE_X, 1, 1);
+		//vkCmdDispatch(frame.commandBuffer, (width + TB_SIZE_X - 1) / TB_SIZE_X, (height + TB_SIZE_Y - 1) / TB_SIZE_Y, 1);
 #else
 		VkStridedDeviceAddressRegionKHR emptySbtEntry = {};
 		vkCmdTraceRaysKHR(
@@ -1194,6 +1406,7 @@ public:
 			VK_CHECK_RESULT(vkEndCommandBuffer(frame.commandBuffer));
 		}
 	}
+#endif
 
 	void updateUniformBuffer()
 	{
@@ -1343,6 +1556,7 @@ public:
 #ifdef __ANDROID__
 		vkGetFenceStatus = reinterpret_cast<PFN_vkGetFenceStatus>(vkGetDeviceProcAddr(device, "vkGetFenceStatus"));
 		vkCmdWriteTimestamp = reinterpret_cast<PFN_vkCmdWriteTimestamp>(vkGetDeviceProcAddr(device, "vkCmdWriteTimestamp"));
+        vkCmdDispatchIndirect = reinterpret_cast<PFN_vkCmdDispatchIndirect>(vkGetDeviceProcAddr(device, "vkCmdDispatchIndirect"));
 #endif
 
 		loadAssets();
@@ -1381,6 +1595,19 @@ public:
 		// particle visibility
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &particleVisibility, sizeof(ParticleVisibility) * gModel.splatSet.size(), nullptr));
 
+
+		// indices buffer
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &indicesBuffer, sizeof(unsigned int) * width * height, nullptr));
+		// transmittances buffer
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &transmittancesBuffer, sizeof(int) * width * height, nullptr));
+		// distances buffer
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &distancesBuffer, sizeof(float) * width * height, nullptr));
+		// indirect buffer
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &indirectBuffer, sizeof(int) * 3, nullptr));
+		// total counts
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &totalCounts, sizeof(unsigned int) * (MAX_ITERATION + 1), nullptr));
+
+
 		// (1) Gaussian Enclosing pass
 		createGaussianEnclosingDescriptorSets();
 		createGaussianEnclosingPipeline();
@@ -1413,7 +1640,6 @@ public:
 		VkDescriptorImageInfo storageImageDescriptor{ VK_NULL_HANDLE, swapChain.buffers[currentFrame.imageIndex].view, VK_IMAGE_LAYOUT_GENERAL };
 		VkWriteDescriptorSet resultImageWrite = vks::initializers::writeDescriptorSet(currentFrame.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImageDescriptor);
 		vkUpdateDescriptorSets(device, 1, &resultImageWrite, 0, VK_NULL_HANDLE);
-
 		buildCommandBuffer(currentFrame);
 		VulkanRTBase::submitFrame(currentFrame);
 	}
