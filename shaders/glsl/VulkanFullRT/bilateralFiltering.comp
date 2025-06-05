@@ -1,0 +1,86 @@
+/*
+ * Abura Soba, 2025
+ * 
+ * Full Ray Tracing
+ *
+ * Gaussian Enclosing pass
+ *
+ * Compute shader
+ */
+
+#version 460
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_scalar_block_layout : enable
+
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+
+//const int kernelSize = 7;
+//const int halfKernelSize = kernelSize / 2;
+
+struct uniform{
+    uint kernelSize;
+}
+
+//original
+// input : depth, 
+//input : image, output filtered image
+void bilateralFilter(uvec2 uv) {
+    /*float sigmaSpace = 1.0f;
+    float sigmaZ = 0.005f;
+    float sigmaColor = 1.0f;*/
+    uint halfKernelSize = uint(kernelSize / 2);
+
+    uint idx = calc_idx(uv);
+
+    // 2D texture ��� 1D vertex buffer ���. �ε��� �ʿ�
+    ObjDesc objResource = objDesc.i[cur_cam];
+    Vertices vertices = Vertices(objResource.vertexAddress[vertex_buffer_idx]);
+    Vertices writeVertices = Vertices(objResource.vertexAddress[vertex_buffer_idx ^ 1]);
+
+    float centralZ = vertices.bv[idx].z;
+    if (centralZ < 1.0f) return;
+    vec3 centralColor = fetchColor(vertices.bv[idx]);
+
+    float result = 0.0f;
+    float weightSum = 0.0f;
+    float sum = 0.0f;
+
+    for (int x = -halfKernelSize; x <= halfKernelSize; ++x) {
+        for (int y = -halfKernelSize; y <= halfKernelSize; ++y) {
+            vec2 offset = vec2(x, y);
+            uint nearbyIdx = calc_idx(uvec2(uv + offset));
+            Buffer_Vertex nearbyVertex = vertices.bv[nearbyIdx];
+            float nearbyZ = nearbyVertex.z;
+            vec3 nearbyColor = fetchColor(nearbyVertex);
+            //if (nearbyZ < -2.5f) continue;
+
+            float spatialWeight = exp(-float(x * x + y * y) / (2.0 * sigmaSpace * sigmaSpace));
+            float ZWeight = nearbyZ - centralZ;
+            ZWeight = exp(-ZWeight * ZWeight / (2.0 * sigmaZ * sigmaZ));
+
+            /*float colorWeight = distance(nearbyColor,centralColor);
+            colorWeight = exp(-colorWeight * colorWeight / (2.0 * sigmaColor * sigmaColor));*/
+            
+            //float weight = spatialWeight * ZWeight * colorWeight;
+            float weight = spatialWeight * ZWeight;
+
+            result += weight * nearbyZ;
+            weightSum += weight;
+        }
+    }
+    
+    writeVertices.bv[idx].z = result / weightSum;
+}
+
+void main() {
+    int halfKernelSize = int(kernelSize / 2);
+    if (gl_GlobalInvocationID.x >= viewport_size.x - halfKernelSize || gl_GlobalInvocationID.y >= viewport_size.y - halfKernelSize)
+        return;
+
+    if (gl_GlobalInvocationID.x < halfKernelSize || gl_GlobalInvocationID.y < halfKernelSize)
+        return;
+
+    bilateralFilter(gl_GlobalInvocationID.xy);
+}

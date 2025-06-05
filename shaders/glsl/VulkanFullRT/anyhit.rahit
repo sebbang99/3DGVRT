@@ -65,8 +65,14 @@ void main(){
 		compareAndSwapHitPayloadValue(hit, 14);
 		compareAndSwapHitPayloadValue(hit, 15);
 
+#if APPROXIMATE_ALPHA_TRACING
+		if(rayPayload.hits[MAX_HIT_PER_TRACE - 1].particleId != INVALID_PARTICLE_ID ){
+			terminateRayEXT;
+		}
+#endif
 		if(rayPayload.hits[MAX_HIT_PER_TRACE - 1].dist > gl_HitTEXT){
 			ignoreIntersectionEXT;
 		}
+		
 	}
 }
