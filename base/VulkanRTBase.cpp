@@ -827,6 +827,14 @@ void VulkanRTBase::updateOverlay(std::vector<BaseFrameObject*>& frameObjects)
 	ImGui::Separator();
 #endif
 
+	// temporary
+	if (ImGui::Button("print view matrices")) {
+		for (int camIdx = 0; camIdx < quaternionCamera.getNumOfCams(); camIdx++) {
+			std::cout << "case " << camIdx << ":\n";
+			quaternionCamera.setDatasetCamera(quaternionCamera.dataType, camIdx, (float)width / height, true);
+		}
+	}
+
 	//text input for fps calculation
 	if(!fpsQuery) {
 		//ImGui::PushItemWidth(50);

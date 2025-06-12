@@ -59,11 +59,12 @@ public:
     }
 
     void printMat4(glm::mat4 mat) {
-        cout << "{";
-        for (int i = 0; i < 4; i++) {
-            cout << mat[i][0] << "," << mat[i][1] << "," << mat[i][2] << "," << mat[i][3] << ",";
+        cout << "{\n";
+        for (int i = 0; i < 2; i++) {
+            cout << "\t\t" << mat[i][0] << ", " << mat[i][1] << ",    " << mat[i][2] << ",    " << mat[i][3] << ",    ";
+            cout << "\t\t" << mat[i][4] << ", " << mat[i][5] << ",    " << mat[i][6] << ",    " << mat[i][7] << ",\n";
         }
-        cout << "}\n";
+        cout << "\t};\n\tbreak;\n";
     }
 
     void setPerspective(float fov, float aspect, float znear, float zfar)
@@ -126,9 +127,9 @@ public:
         viewMatrix = frame->transformMatrix;
 
         if (debugMsg) {
-            cout << "perspective mat:\n";
-            printMat4(perspective);
-            cout << "view mat:\n";
+            //cout << "perspective mat:\n";
+            //printMat4(perspective);
+            cout << "\tm_frameInfo.viewMatrix = glm::mat4";
             printMat4(viewMatrix);
         }
     }

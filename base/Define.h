@@ -47,7 +47,7 @@
 #define TIMER_CORRECTION 1
 #define TEXTURE_COMPRESSION 0
 #define ENABLE_HIT_COUNTS 0	// Should be managed with 3dgs.glsl. Only use when the RAY_QUERY is 0.
-#define EVAL_QUALITY 0
+#define EVAL_QUALITY 1
 
 #define USE_ANIMATION 0 // 0 is Default
 
