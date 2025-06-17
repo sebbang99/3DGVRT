@@ -60,9 +60,10 @@ public:
 
     void printMat4(glm::mat4 mat) {
         cout << "{\n";
-        for (int i = 0; i < 2; i++) {
-            cout << "\t\t" << mat[i][0] << ", " << mat[i][1] << ",    " << mat[i][2] << ",    " << mat[i][3] << ",    ";
-            cout << "\t\t" << mat[i][4] << ", " << mat[i][5] << ",    " << mat[i][6] << ",    " << mat[i][7] << ",\n";
+        for (int i = 0; i < 4; i++) {
+            cout << "\t\t" << mat[i][0] << "," << mat[i][1] << "," << mat[i][2] << "," << mat[i][3] << ",";
+            if (i % 2 != 0)
+                cout << "\n";
         }
         cout << "\t};\n\tbreak;\n";
     }

@@ -29,7 +29,7 @@
 #define CAM_ROTATION_SPEED 0.5f
 
 
-#define ASSET 3
+#define ASSET 2
 #define LOAD_GLTF 0
 
  // ---------- split blas ---------- //
@@ -47,7 +47,7 @@
 #define TIMER_CORRECTION 1
 #define TEXTURE_COMPRESSION 0
 #define ENABLE_HIT_COUNTS 0	// Should be managed with 3dgs.glsl. Only use when the RAY_QUERY is 0.
-#define EVAL_QUALITY 1
+#define EVAL_QUALITY 0
 
 #define USE_ANIMATION 0 // 0 is Default
 
@@ -56,7 +56,7 @@
 
 #if ASSET == 0
 #define ASSET_PATH "3DGRTModels/lego/"
-#define PLY_FILE "lego.ply"
+#define PLY_FILE "lego_3dgrt.ply"
 
 #elif ASSET == 1
 #define ASSET_PATH "3DGRTModels/bonsai/"
@@ -66,11 +66,11 @@
 
 #elif ASSET == 2
 #define ASSET_PATH "3DGRTModels/chair/"
-#define PLY_FILE "chair.ply"
+#define PLY_FILE "chair_3dgrt.ply"
 
 #elif ASSET == 3
 #define ASSET_PATH "3DGRTModels/hotdog/"
-#define PLY_FILE "hotdog.ply"
+#define PLY_FILE "hotdog_3dgrt.ply"
 
 #elif ASSET == 4
 #define ASSET_PATH "3DGRTModels/flowers/"
